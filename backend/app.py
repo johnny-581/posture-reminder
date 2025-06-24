@@ -1,14 +1,21 @@
+import cv2
+import mediapipe as mp
+import numpy as np
 from mediapipe import solutions
 from mediapipe.framework.formats import landmark_pb2
-import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
-import numpy as np
-import cv2
+import threading
 
-def draw_landmarks_on_image(rgb_image, detection_result):
+result_lock = threading.Lock()
+latest_detection_result = None
+
+def draw_landmarks_on_image(bgr_image, detection_result):
+    if not detection_result or not detection_result.pose_Landmarks:
+        return bgr_image
+    
     pose_landmarks_list = detection_result.pose_landmarks
-    annotated_image = np.copy(rgb_image)
+    annotated_image = np.copy(bgr_image)
 
     for i in range(len(pose_landmarks_list)):
         pose_landmarks = pose_landmarks_list[i]
@@ -18,29 +25,66 @@ def draw_landmarks_on_image(rgb_image, detection_result):
             landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z) for landmark in pose_landmarks
         ])
 
-        bgr_image_to_draw_on = cv2.cvtColor(annotated_image, cv2.COLOR_RGB2BGR)
-
         solutions.drawing_utils.draw_landmarks(
-            bgr_image_to_draw_on,
+            annotated_image,
             pose_landmarks_proto,
             solutions.pose.POSE_CONNECTIONS,
             solutions.drawing_styles.get_default_pose_landmarks_style()
         )
     
-    return bgr_image_to_draw_on
+    return annotated_image
 
-base_options = python.BaseOptions(model_asset_path='model/pose_landmarker_full.task')
-options = vision.PoseLandmarkerOptions(
-    base_options=base_options,
-    output_segmentation_masks=True
-)
-detector = vision.PoseLandmarker.create_from_options(options)
-image = mp.Image.create_from_file("image.jpg")
+def save_result_callback(result: vision.PoseLandmarkerResult, output_image: mp):
+    global latest_detection_result
+    with result_lock:
+        latest_detection_result = result
 
-detection_result = detector.detect(image)
+def main():
+    base_options = python.BaseOptions(model_asset_path='model/pose_landmarker_full.task')
+    options = vision.PoseLandmarkerOptions(
+        base_options=base_options,
+        running_mode=vision.RunningMode.LIVE_STREAM,
+        output_segmentation_masks=True,
+        result_callback=save_result_callback
+    )
 
-annotated_image_bgr = draw_landmarks_on_image(image.numpy_view(), detection_result)
+    with vision.PoseLandmarker.create_from_options(options) as detector:
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            print("Error: could not open webcam")
+            return
+        
+    frame_timestamp_ms = 0
 
-cv2.imshow("Annotated Image", annotated_image_bgr)
-cv2.waitKey(0)
-cv2.destroyAllWindows()
+    while cap.isOpened():
+        success, frame = cap.read()
+        if not success:
+            print("Ignoring empty camera frame")
+            continue
+
+        frame = cv2.flip(frame, 1) # flip the frame horizontally
+
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        mp_image = np.Image(image_format=mp.ImageFormat.SRB, data=rgb_frame)
+
+        frame_timestamp_ms = int(cap.get(cv2.CAP_PROP_POS_MSEC))
+
+        detector.detect_async(mp_image, frame_timestamp_ms) # async
+
+        current_result = None
+        with result_lock:
+            if latest_detection_result is not None:
+                current_result = latest_detection_result
+            
+        annotated_image = draw_landmarks_on_image(frame, current_result)
+
+        cv2.imshow("Real-Time Pose Landmarks", annotated_image)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+    if __name__ == "__main__":
+        main()
