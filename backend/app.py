@@ -6,12 +6,13 @@ from mediapipe.framework.formats import landmark_pb2
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import threading
+import time
 
 result_lock = threading.Lock()
 latest_detection_result = None
 
 def draw_landmarks_on_image(bgr_image, detection_result):
-    if not detection_result or not detection_result.pose_Landmarks:
+    if not detection_result or not detection_result.pose_landmarks:
         return bgr_image
     
     pose_landmarks_list = detection_result.pose_landmarks
@@ -34,7 +35,7 @@ def draw_landmarks_on_image(bgr_image, detection_result):
     
     return annotated_image
 
-def save_result_callback(result: vision.PoseLandmarkerResult, output_image: mp):
+def save_result_callback(result: vision.PoseLandmarkerResult, output_image: mp, timestamp_ms: int):
     global latest_detection_result
     with result_lock:
         latest_detection_result = result
@@ -53,38 +54,39 @@ def main():
         if not cap.isOpened():
             print("Error: could not open webcam")
             return
-        
-    frame_timestamp_ms = 0
 
-    while cap.isOpened():
-        success, frame = cap.read()
-        if not success:
-            print("Ignoring empty camera frame")
-            continue
+        while cap.isOpened():
+            success, frame = cap.read()
+            if not success:
+                print("Ignoring empty camera frame")
+                continue
 
-        frame = cv2.flip(frame, 1) # flip the frame horizontally
+            print("frame captured!")
 
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        mp_image = np.Image(image_format=mp.ImageFormat.SRB, data=rgb_frame)
+            frame = cv2.flip(frame, 1) # flip the frame horizontally
 
-        frame_timestamp_ms = int(cap.get(cv2.CAP_PROP_POS_MSEC))
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
 
-        detector.detect_async(mp_image, frame_timestamp_ms) # async
+            frame_timestamp_ms = int(time.time() * 1000)
 
-        current_result = None
-        with result_lock:
-            if latest_detection_result is not None:
-                current_result = latest_detection_result
-            
-        annotated_image = draw_landmarks_on_image(frame, current_result)
+            detector.detect_async(mp_image, frame_timestamp_ms) # async
 
-        cv2.imshow("Real-Time Pose Landmarks", annotated_image)
+            current_result = None
+            with result_lock:
+                if latest_detection_result is not None:
+                    current_result = latest_detection_result
+                
+            annotated_image = draw_landmarks_on_image(frame, current_result)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+            cv2.imshow("Real-Time Pose Landmarks", annotated_image)
+
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                print("\'q\' pressed for quit")
+                break
 
     cap.release()
     cv2.destroyAllWindows()
 
-    if __name__ == "__main__":
-        main()
+if __name__ == "__main__":
+    main()
