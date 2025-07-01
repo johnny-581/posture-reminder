@@ -2,6 +2,9 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import time
+import pandas as pd
+import lightgbm as lgb
+import os
 
 from mediapipe import solutions
 from mediapipe.framework.formats import landmark_pb2
@@ -13,16 +16,9 @@ annotated_image = None
 FACE_LANDMARKS_INDICES = list(range(11))
 SHOULDER_LANDMARKS_INDICES = [11, 12]
 
-printed = 0
-
 def draw_and_save_result(result: vision.PoseLandmarkerResult, output_image: mp, timestamp_ms: int):
     global annotated_image
     annotated_image_np = output_image.numpy_view().copy()
-
-    global printed
-    if not printed:
-        print(f"\n{result}\n")
-        printed = 1
 
     if result.pose_landmarks:
         for pose_landmarks in result.pose_landmarks:
