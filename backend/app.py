@@ -2,9 +2,6 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import time
-import pandas as pd
-import lightgbm as lgb
-import os
 
 from mediapipe import solutions
 from mediapipe.framework.formats import landmark_pb2
