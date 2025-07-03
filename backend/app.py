@@ -2,6 +2,9 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import time
+import pandas as pd
+import lightgbm as lgb
+import os
 
 from mediapipe import solutions
 from mediapipe.framework.formats import landmark_pb2
@@ -52,7 +55,7 @@ def draw_and_process_result(result: vision.PoseLandmarkerResult, output_image: m
 
     annotated_image_np = output_image.numpy_view().copy()
     prediction_text = ""
-    text_color = (0, 255, 0)
+    text_color = (0, 255, 0) # green
 
     latest_features = extract_features(result.pose_landmarks)
 
@@ -71,7 +74,30 @@ def draw_and_process_result(result: vision.PoseLandmarkerResult, output_image: m
             )
 
         if app_mode == "INFERENCING" and model is not None and latest_features is not None:
-            
+            prediction = model.predict(latest_features.reshape(1, -1))
+            predicted_label = prediction[0]
+            prediction_text = f"Prediction: {LABEL_MAP[predicted_label]}"
+            if predicted_label == LABEL_SLOUCHING:
+                text_color = (0, 0, 255) # red
+        
+    if app_mode == "COLLECTING":
+        ui_text = "Mode: COLLECTING | UP_ARROW: Up-Straight | DOWN_ARROW: Slouch | T: Train"
+    elif app_mode == "INFERENCING":
+        ui_text = "Mode: INFERENCING | W: Save Model | Q: Quit"
+    else:
+        ui_text = "Initializing..."
+
+    # ui text
+    cv2.putText(annotated_image_np, ui_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+    # collected data count
+    up_count = sum(1 for item in training_data if item[-1] == LABEL_UP_STRAIGHT)
+    slouch_count = sum(1 for item in training_data if item[-1] == LABEL_SLOUCHING)
+    cv2.putText(annotated_image_np, f"Up: {up_count} | Slouch: {slouch_count}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+    # prediction text
+    if prediction_text:
+        cv2.putText(annotated_image_np, prediction_text, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8, text_color, 2)
 
     annotated_image = annotated_image_np
 
