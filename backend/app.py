@@ -5,6 +5,7 @@ import time
 import pandas as pd
 import lightgbm as lgb
 import os
+import joblib
 
 from mediapipe import solutions
 from mediapipe.framework.formats import landmark_pb2
@@ -38,8 +39,8 @@ FACE_LANDMARKS_INDICES = list(range(11))
 SHOULDER_LANDMARKS_INDICES = [11, 12]
 REQUIRED_LANDMARKS_FOR_FEATURES = [0, 7, 8, 9, 10, 11, 12]
 
-KEY_UP = 2490368
-KEY_DOWN = 2621440
+KEY_UP = 0
+KEY_DOWN = 1
 KEY_T = ord('t')
 KEY_W = ord('w')
 KEY_Q = ord('q')
@@ -47,7 +48,46 @@ KEY_Q = ord('q')
 
 
 def extract_features(pose_landmarks_list):
-    pass
+    if not pose_landmarks_list:
+        return None
+    
+    p = pose_landmarks_list[0] # the first detected person
+
+    for i in REQUIRED_LANDMARKS_FOR_FEATURES:
+        if p[i].visibility < 0.7:
+            return None
+    
+    left_shoulder = np.array([p[12].x, p[12].y, p[12].z])
+    right_shoulder = np.array([p[11].x, p[11].y, p[11].z])
+    left_ear = np.array([p[8].x, p[8].y, p[8].z])
+    right_ear = np.array([p[7].x, p[7].y, p[7].z])
+    nose = np.array([p[0].x, p[0].y, p[0].z])
+    mouth_left = np.array([p[10].x, p[10].y, p[10].z])
+    mouth_right = np.array([p[9].x, p[9].y, p[9].z])
+
+    shoulder_center = (left_shoulder + right_shoulder) / 2
+    head_center = (left_ear + right_ear) / 2
+    mouth_center = (mouth_left + mouth_right) / 2
+    
+    shoulder_width = np.linalg.norm(left_shoulder - right_shoulder)
+    if shoulder_width < 1e-6:
+        return None
+    
+    head_shoulder_z_diff = (head_center[2] - shoulder_center[2]) / shoulder_width
+    head_shoulder_y_diff = (head_center[1] - shoulder_center[1]) / shoulder_width
+
+    vec_y = head_center[1] - shoulder_center[1]
+    vec_z = head_center[2] - shoulder_center[2]
+    posture_angle = np.arctan2(vec_y, vec_z)
+
+    head_tilt_z_diff = (nose[2] - mouth_center[2]) / shoulder_width
+
+    return np.array([
+        head_shoulder_z_diff,
+        head_shoulder_y_diff,
+        posture_angle,
+        head_tilt_z_diff
+    ])
 
 
 def draw_and_process_result(result: vision.PoseLandmarkerResult, output_image: mp, timestamp_ms: int):
@@ -73,8 +113,10 @@ def draw_and_process_result(result: vision.PoseLandmarkerResult, output_image: m
                 solutions.drawing_styles.get_default_pose_landmarks_style()
             )
 
+        # prediction
         if app_mode == "INFERENCING" and model is not None and latest_features is not None:
-            prediction = model.predict(latest_features.reshape(1, -1))
+            prediction_df = pd.DataFrame([latest_features], columns=FEATURE_COLUMNS)
+            prediction = model.predict(prediction_df)
             predicted_label = prediction[0]
             prediction_text = f"Prediction: {LABEL_MAP[predicted_label]}"
             if predicted_label == LABEL_SLOUCHING:
@@ -119,12 +161,7 @@ def main():
         # model loading
         if os.path.exists(MODEL_FILE):
             try:
-                model = lgb.Booster(model_file=MODEL_FILE)
-                lgbm = lgb.LGBMClassifier()
-                lgbm._Booster = model
-                lgbm._n_classes = 2
-                lgbm.fitted_ = True
-                model = lgbm
+                model = joblib.load(MODEL_FILE)
                 app_mode = "INFERENCING"
                 print("loaded existing model, starting INFERENCING mode")
             except Exception as e:
@@ -152,49 +189,57 @@ def main():
 
             detector.detect_async(mp_image, frame_timestemp_ms)
 
-            if annotated_image is not None:
+            if annotated_image is None:
+                display_image = frame
+            else:
                 display_image = cv2.cvtColor(annotated_image, cv2.COLOR_RGB2BGR)
-                key = cv2.waitKey(5)
+            
+            key = cv2.waitKey(5)
 
-                if key == KEY_Q:
-                    break
+            if key == KEY_Q:
+                break
 
-                # data collection mode
-                if app_mode == "COLLECTING":
-                    if key == KEY_UP:
-                        if latest_features is not None:
-                            training_data.append(np.append(latest_features, LABEL_UP_STRAIGHT))
-                            print(f"captured 'up straight' sample. Total: {len(training_data)}")
-                    elif key == KEY_DOWN:
-                        if latest_features is not None:
-                            training_data.append(np.append(latest_features, LABEL_SLOUCHING))
-                            print(f"captured 'slouching' sample. Total: {len(training_data)}")
-                    elif key == KEY_T:
-                        up_count = sum(1 for item in training_data if item[-1] == LABEL_UP_STRAIGHT)
-                        slouch_count = sum(1 for item in training_data if item[-1] == LABEL_SLOUCHING)
-                        if up_count > 5 and slouch_count > 5:
-                            print("training model...")
+            # data collection mode
+            if app_mode == "COLLECTING":
+                if key == KEY_UP:
+                    print("up pressed")
+                    if latest_features is not None:
+                        training_data.append(np.append(latest_features, LABEL_UP_STRAIGHT))
+                        print(f"captured 'up straight' sample. Total: {len(training_data)}")
+                elif key == KEY_DOWN:
+                    if latest_features is not None:
+                        training_data.append(np.append(latest_features, LABEL_SLOUCHING))
+                        print(f"captured 'slouching' sample. Total: {len(training_data)}")
+                elif key == KEY_T:
+                    up_count = sum(1 for item in training_data if item[-1] == LABEL_UP_STRAIGHT)
+                    slouch_count = sum(1 for item in training_data if item[-1] == LABEL_SLOUCHING)
+                    if up_count > 5 and slouch_count > 5:
+                        print("training model...")
+                        df = pd.DataFrame(training_data, columns=FEATURE_COLUMNS + ['label'])
+                        X = df[FEATURE_COLUMNS]
+                        y = df['label'].astype(int)
+
+                        model = lgb.LGBMClassifier(objective='binary')
+                        model.fit(X, y)
+
+                        app_mode = "INFERENCING"
+                        print("training complete. Switching to INFERENCING mode")
+                    else:
+                        print("not enough data to train on")
+
+            elif app_mode == "INFERENCING":
+                if key == KEY_W:
+                    # save data
+                    if model is not None:
+                        joblib.dump(model, MODEL_FILE)
+                        print(f"model saved to {MODEL_FILE}!")
+
+                        if training_data:
                             df = pd.DataFrame(training_data, columns=FEATURE_COLUMNS + ['label'])
-                            X = df[FEATURE_COLUMNS]
-                            y = df['label'].astype(int)
-
-                            model = lgb.LGBMClassifier(objective='binary')
-                            model.fit(X, y)
-
-                            app_mode = "INFERENCE"
-                            print("training complete. Switching to INFERENCING mode")
-                        else:
-                            print("not enough data to train on")
-
-                elif app_mode == "INFERENCING":
-                    if key == KEY_W:
-                        # save data
-                        if model is not None:
-                            model.booster_.save_model(MODEL_FILE)
-                            df = pd.DataFrame(training_data, FEATURE_COLUMNS + ['label'])
                             df.to_csv(DATA_FILE, index=False)
+                            print(f"training data saved to {DATA_FILE}!")
 
-                cv2.imshow("Posture Reminder", display_image)
+            cv2.imshow("Posture Reminder", display_image)
 
         cap.release()
         cv2.destroyAllWindows()
