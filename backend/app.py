@@ -12,6 +12,11 @@ from mediapipe.framework.formats import landmark_pb2
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
+
 app_mode = "STARTING" # STARTING, COLLECTING, INFERENCING
 model = None
 training_data = []
@@ -21,12 +26,27 @@ latest_features = None
 
 MODEL_FILE = 'slouch_model.txt'
 DATA_FILE = 'slouch_training_data.csv'
-FEATURE_COLUMNS = [
-    'head_shoulder_z_diff',
-    'head_shoulder_y_diff',
-    'posture_angle',
-    'head_tilt_z_diff'
-]
+
+FEATURE_SETS = {
+    "set1": [
+        'head_shoulder_z_diff',
+        'head_shoulder_y_diff',
+        'posture_angle',
+        'head_tilt_z_diff',
+    ],
+    "set2": [
+        'head_shoulder_z_diff',
+        'head_shoulder_y_diff',
+        'posture_angle',
+    ],
+    "set3": [
+        'head_shoulder_z_diff',
+        'head_shoulder_y_diff',
+    ],
+    "set4": [
+        'posture_angle',
+    ]
+}
 
 LABEL_SLOUCHING = 0
 LABEL_UP_STRAIGHT = 1
@@ -86,7 +106,7 @@ def extract_features(pose_landmarks_list):
         head_shoulder_z_diff,
         head_shoulder_y_diff,
         posture_angle,
-        head_tilt_z_diff
+        # head_tilt_z_diff
     ])
 
 
@@ -215,9 +235,22 @@ def main():
                     slouch_count = sum(1 for item in training_data if item[-1] == LABEL_SLOUCHING)
                     if up_count > 5 and slouch_count > 5:
                         print("training model...")
-                        df = pd.DataFrame(training_data, columns=FEATURE_COLUMNS + ['label'])
-                        X = df[FEATURE_COLUMNS]
+                        print("------starting feature set evaluation------")
+                        ALL_FEATURE_COLUMNS = [
+                            'head_shoulder_z_diff',
+                            'head_shoulder_y_diff',
+                            'posture_angle',
+                            'head_tilt_z_diff'
+                        ]
+                        df = pd.DataFrame(training_data, columns=ALL_FEATURE_COLUMNS + ['label'])
+                        X = df[ALL_FEATURE_COLUMNS]
                         y = df['label'].astype(int)
+
+                        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+                        results = {}
+
+                        
 
                         model = lgb.LGBMClassifier(objective='binary')
                         model.fit(X, y)
