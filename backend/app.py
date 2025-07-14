@@ -13,9 +13,7 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-import seaborn as sns
-import matplotlib.pyplot as plt
+from sklearn.metrics import accuracy_score, classification_report
 
 app_mode = "STARTING" # STARTING, COLLECTING, INFERENCING
 model = None
@@ -45,8 +43,20 @@ FEATURE_SETS = {
     ],
     "set4": [
         'posture_angle',
+    ],
+    "set5": [
+        'head_shoulder_z_diff',
+        'head_shoulder_y_diff',
+        ''
     ]
 }
+
+FEATURE_COLUMNS = [
+        'head_shoulder_z_diff',
+        'head_shoulder_y_diff',
+        'posture_angle',
+        'head_tilt_z_diff',
+    ]
 
 LABEL_SLOUCHING = 0
 LABEL_UP_STRAIGHT = 1
@@ -106,7 +116,7 @@ def extract_features(pose_landmarks_list):
         head_shoulder_z_diff,
         head_shoulder_y_diff,
         posture_angle,
-        # head_tilt_z_diff
+        head_tilt_z_diff
     ])
 
 
@@ -168,8 +178,6 @@ def main():
     global app_mode, model, training_data
 
     base_options = python.BaseOptions(model_asset_path='model/pose_landmarker_full.task')
-    # base_options = python.BaseOptions(model_asset_path='model/pose_landmarker_heavy.task')
-    # base_options = python.BaseOptions(model_asset_path='model/pose_landmarker_lite.task')
     options = vision.PoseLandmarkerOptions(
         base_options=base_options,
         running_mode=vision.RunningMode.LIVE_STREAM,
@@ -250,13 +258,37 @@ def main():
 
                         results = {}
 
+                        for set_name, feature_columns in FEATURE_SETS.items():
+                            print(f"\n---training and evaluating for {set_name}---")
+                            X_train_subset = X_train[feature_columns]
+                            X_test_subset = X_test[feature_columns]
+
+                            model = lgb.LGBMClassifier(objective='binary')
+                            model.fit(X_train_subset, y_train)
+
+                            y_predict = model.predict(X_test_subset)
+
+                            accuracy = accuracy_score(y_test, y_predict)
+                            report = classification_report(y_test, y_predict, target_names=LABEL_MAP.values())
+
+                            print(f"Accuracy: {accuracy:.4f}")
+                            print("Classification Report:")
+                            print(report)
+
+                            results[set_name] = {
+                                'accuracy': accuracy,
+                                'model': model,
+                                'features': feature_columns
+                            }
                         
+                        best_set_name = max(results, key=lambda k: results[k]['accuracy'])
+                        model = results[best_set_name]['model']
+                        FEATURE_COLUMNS = results[best_set_name]['features']
 
-                        model = lgb.LGBMClassifier(objective='binary')
-                        model.fit(X, y)
+                        print(f"---Best feature set is '{best_set_name}' with accuracy {results[best_set_name]['accuracy']:.4f}")
 
+                        print("Switching to INFERENCING mode with the best model")
                         app_mode = "INFERENCING"
-                        print("training complete. Switching to INFERENCING mode")
                     else:
                         print("not enough data to train on")
 
